@@ -64,7 +64,12 @@ import okhttp3.Response
 import rx.Observable
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.get
+import java.security.SecureRandom
+import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManager
+import javax.net.ssl.X509TrustManager
 import kotlin.CharSequence
 import kotlin.collections.any
 import kotlin.math.min
@@ -134,16 +139,19 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
             network.client.newBuilder()
                 .dns(Dns.SYSTEM) // don't use DNS over HTTPS as it breaks IP addressing
                 .callTimeout(2, TimeUnit.MINUTES)
+                .applyInsecureTlsIfEnabled()
                 .build(),
         )
     }
 
-    override val client: OkHttpClient =
+    override val client: OkHttpClient by lazy {
         network.client.newBuilder()
             .dns(Dns.SYSTEM) // don't use DNS over HTTPS as it breaks IP addressing
             .callTimeout(2, TimeUnit.MINUTES)
+            .applyInsecureTlsIfEnabled()
             .addInterceptor(OkAuthorizationInterceptor(tokenManager))
             .build()
+    }
 
     override fun headersBuilder(): Headers.Builder = Headers.Builder().apply {
         tokenManager.value.getHeaders().forEach {
@@ -722,25 +730,19 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
         Injekt.get<Application>().getSharedPreferences("source_$id", 0x0000)
     }
 
-    init {
-        val preferencesMap = mapOf(
-            ADDRESS_TITLE to ADDRESS_DEFAULT,
-            LOGIN_TITLE to LOGIN_DEFAULT,
-            PASSWORD_TITLE to PASSWORD_DEFAULT,
-        )
-
-        preferencesMap.forEach { (key, defaultValue) ->
-            val initBase = preferences.getString(key, defaultValue)!!
-
-            if (initBase.isNotBlank()) {
-                refreshCategoryList()
-            }
-        }
-    }
-
     // ------------- Preferences -------------
     override fun setupPreferenceScreen(screen: PreferenceScreen) {
         screen.addPreference(screen.editTextPreference(ADDRESS_TITLE, ADDRESS_DEFAULT, baseUrl, false, "i.e. http://192.168.1.115:4567", ADDRESS_TITLE))
+
+        screen.addPreference(
+            screen.checkBoxPreference(
+                TRUST_SELF_SIGNED_CERTS_TITLE,
+                TRUST_SELF_SIGNED_CERTS_DEFAULT,
+                "INSECURE: Disables HTTPS certificate + hostname verification for this source. Enable only if you fully trust the network/server (e.g., self-signed reverse proxy). Restart Mihon to apply.",
+                TRUST_SELF_SIGNED_CERTS_KEY,
+            ),
+        )
+
         screen.addPreference(screen.editListPreference(MODE_TITLE, MODE_DEFAULT, baseAuthMode.title, AuthMode.entries.map { it.title }, AuthMode.entries.map { it.toString() }, "Must match Suwayomi's auth_mode setting", MODE_TITLE))
         screen.addPreference(screen.editTextPreference(LOGIN_TITLE, LOGIN_DEFAULT, baseLogin, false, "", LOGIN_KEY))
         screen.addPreference(screen.editTextPreference(PASSWORD_TITLE, PASSWORD_DEFAULT, basePassword, true, "", PASSWORD_KEY))
@@ -834,6 +836,7 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
     private fun getPrefBasePassword(): String = preferences.getString(PASSWORD_KEY, PASSWORD_DEFAULT)!!
     private fun getPrefTrackerDelete(): Boolean = preferences.getBoolean(TRACKER_DELETE_KEY, TRACKER_DELETE_DEFAULT)
     private fun fetchDataFromSource(): Boolean = preferences.getBoolean(FETCH_DATA_FROM_SOURCE_TITLE, FETCH_DATA_FROM_SOURCE_DEFAULT)
+    private fun getPrefTrustSelfSignedCerts(): Boolean = preferences.getBoolean(TRUST_SELF_SIGNED_CERTS_KEY, TRUST_SELF_SIGNED_CERTS_DEFAULT)
 
     companion object {
         private const val ADDRESS_TITLE = "Server URL Address"
@@ -851,6 +854,10 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
         private const val TRACKER_DELETE_DEFAULT = false
         private const val FETCH_DATA_FROM_SOURCE_TITLE = "Fetch Data From Source"
         private const val FETCH_DATA_FROM_SOURCE_DEFAULT = true
+
+        private const val TRUST_SELF_SIGNED_CERTS_KEY = "trust_self_signed_certs"
+        private const val TRUST_SELF_SIGNED_CERTS_TITLE = "Trust self-signed HTTPS certificates"
+        private const val TRUST_SELF_SIGNED_CERTS_DEFAULT = false
 
         private const val TAG = "Tachidesk"
     }
@@ -895,6 +902,37 @@ class Tachidesk : ConfigurableSource, UnmeteredSource, HttpSource() {
 
     private val checkedBaseUrl: String
         get(): String = cleanUrl.ifEmpty { throw RuntimeException("Set Tachidesk server url in extension settings") }
+
+    private fun OkHttpClient.Builder.applyInsecureTlsIfEnabled(): OkHttpClient.Builder {
+        val enabled = runCatching { getPrefTrustSelfSignedCerts() }.getOrDefault(false)
+        if (!enabled) return this
+
+        return runCatching { ignoreAllSslErrors() }
+            .onFailure { e -> Log.e(TAG, "Failed to enable insecure TLS for self-signed certs; falling back to normal TLS", e) }
+            .getOrDefault(this)
+    }
+
+    /**
+     * INSECURE: Trusts all certificates and disables hostname verification.
+     * Only intended for self-signed certs on trusted networks.
+     */
+    private fun OkHttpClient.Builder.ignoreAllSslErrors(): OkHttpClient.Builder {
+        val trustAllCerts = arrayOf<TrustManager>(
+            object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) { /* no-op */ }
+                override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) { /* no-op */ }
+                override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+            },
+        )
+
+        val trustManager = trustAllCerts[0] as X509TrustManager
+        val sslContext = SSLContext.getInstance("TLS")
+        sslContext.init(null, trustAllCerts, SecureRandom())
+
+        sslSocketFactory(sslContext.socketFactory, trustManager)
+        hostnameVerifier { _, _ -> true }
+        return this
+    }
 
     private fun paginateResults(mangaList: List<MangaFragment>, page: Int, itemsPerPage: Int): Pair<List<MangaFragment>, Boolean> {
         var hasNextPage = false

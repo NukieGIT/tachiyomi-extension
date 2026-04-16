@@ -5,6 +5,9 @@
 # ![app icon](./.github/readme-images/app-icon.png)Suwayomi Extension
 This repository contains the Suwayomi extension for [Tachiyomi](https://github.com/tachiyomiorg/tachiyomi) and variants.
 
+# Disclaimer
+I have exclusively used AI to add support for self-signed certificates as I do not know Kotlin nor Android development. (Also my head hurt and I HAD zero incentive to make this lol)
+
 # Usage
 
 The Extension can be downloaded, installed, and uninstalled via the main Tachiyomi app and variants. They are installed and uninstalled like regular apps, in `.apk` format.
