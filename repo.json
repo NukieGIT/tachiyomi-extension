@@ -2,6 +2,7 @@
   "meta": {
     "name": "Nuk Fix Suwayomi Extension Repo",
     "shortName": "SuwayomiNuk",
+    "website": "https://github.com/NukieGIT/tachiyomi-extension",
     "signingKeyFingerprint": "14e30824d54b3b7b4bb12d363201378a64745f6ac62adcf3cccf5ca766f64a2f"
   }
 }
